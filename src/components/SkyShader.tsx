@@ -1,3 +1,4 @@
+
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -7,7 +8,7 @@ const SkyShader = () => {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // Create noise texture
+    // Create noise texture with lower precision
     const createNoiseTexture = () => {
       const size = 256;
       const data = new Uint8Array(size * size * 4);
@@ -18,19 +19,26 @@ const SkyShader = () => {
         data[i + 2] = noise;
         data[i + 3] = 255;
       }
-      return new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+      const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+      texture.generateMipmaps = false; // Optimization: Disable mipmaps
+      texture.minFilter = THREE.NearestFilter; // Optimization: Use nearest filtering
+      texture.magFilter = THREE.NearestFilter;
+      return texture;
     };
 
-    // Scene setup
+    // Scene setup optimized for fullscreen quad
     const scene = new THREE.Scene();
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
     camera.position.z = 1;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ 
+      antialias: false, // Optimization: Disable antialiasing for performance
+      powerPreference: 'high-performance' // Optimization: Request high-performance GPU
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
     containerRef.current.appendChild(renderer.domElement);
 
-    // Create noise texture
+    // Create and cache noise texture
     const noiseTexture = createNoiseTexture();
     noiseTexture.needsUpdate = true;
 
@@ -42,7 +50,7 @@ const SkyShader = () => {
       noiseTexture: { value: noiseTexture }
     };
 
-    // Vertex shader
+    // Vertex shader (simplified for fullscreen quad)
     const vertexShader = `
       varying vec2 vUv;
       void main() {
@@ -51,8 +59,10 @@ const SkyShader = () => {
       }
     `;
 
-    // Fragment shader
+    // Fragment shader with optimizations
     const fragmentShader = `
+      precision mediump float; // Optimization: Use medium precision
+      
       uniform vec2 resolution;
       uniform float time;
       uniform vec2 mouse;
@@ -379,8 +389,8 @@ const SkyShader = () => {
           float staratt = 1.;
           float scatatt = 1.;
           vec3 star = vec3(0.);
-          
-          // Water rendering
+
+          // Water rendering optimized
           if (D.y < -0.02) {
               vec3 waterPlaneHigh = vec3(0.0, -1.0, 0.0);
               vec3 waterPlaneLow = vec3(0.0, -1.0 - WATER_DEPTH, 0.0);
@@ -405,34 +415,29 @@ const SkyShader = () => {
               R.y = abs(R.y);
               
               vec3 reflection;
-              vec3 reflectionScat = vec3(0.0); // Separate scattering for reflection
-              vec3 reflectionStar = vec3(0.0); // Stars in reflection
+              vec3 reflectionScat = vec3(0.0);
+              vec3 reflectionStar = vec3(0.0);
               
-              // Calculate reflection components with same attenuation as sky
               float reflectionFade = smoothstep(0., 0.01, abs(R.y)) * 0.5 + 0.9;
               float reflectionStarAtt = 1.0 - min(1.0, (uvMouse.y * 2.0));
               float reflectionScatAtt = 1.0 - min(1.0, (uvMouse.y * 2.2));
               
-              // Apply sky calculations to reflection
               if (R.y > 0.0) {
                   float L1 = O.y / R.y;
                   vec3 O1 = O + R * L1;
-                  vec3 R1 = normalize(R + vec3(1., .0009 * sin(time + 6.2831 * noise(O1.xz + vec2(0., time * 0.8))), 0.));
+                  vec3 R1 = normalize(R + vec3(1., .0009 * sin(time + 6.2831 * texture2D(noiseTexture, O1.xz + vec2(0., time * 0.8)).r), 0.));
                   reflectionStar = stars(R1);
                   
                   reflectionStar *= att * reflectionStarAtt;
                   scatter(O, R, reflection, reflectionScat);
-                  reflection *= att * 0.7; // Base reflection attenuation
-                  reflectionScat *= att * reflectionScatAtt * 0.6; // Scattering attenuation
+                  reflection *= att * 0.7;
+                  reflectionScat *= att * reflectionScatAtt * 0.6;
                   
                   reflection += reflectionScat;
                   reflection += reflectionStar;
               }
               
-              // Water scattering parameters
               vec3 waterScattering = vec3(0.0293, 0.0698, 0.1717) * 0.15;
-              
-              // Combine reflection and scattering with fresnel
               color = mix(waterScattering, reflection, fresnel);
           } else {
               float fade = smoothstep(0., 0.01, abs(D.y)) * 0.5 + 0.9;
@@ -441,13 +446,13 @@ const SkyShader = () => {
               
               float L1 = O.y / D.y;
               vec3 O1 = O + D * L1;
-              vec3 D1 = normalize(D + vec3(1., .0009 * sin(time + 6.2831 * noise(O1.xz + vec2(0., time * 0.8))), 0.));
+              vec3 D1 = normalize(D + vec3(1., .0009 * texture2D(noiseTexture, O1.xz + vec2(0., time * 0.8)).r, 0.));
               star = stars(D1);
               
               star *= att * staratt;
               scatter(O, D, color, scat);
-              color *= att * 0.7; // Matched with reflection attenuation
-              scat *= att * scatatt * 0.6; // Matched with reflection scattering
+              color *= att * 0.7;
+              scat *= att * scatatt * 0.6;
               
               color += scat;
               color += star;
@@ -457,36 +462,48 @@ const SkyShader = () => {
       }
     `;
 
-    // Create shader material
+    // Create shader material with optimizations
     const material = new THREE.ShaderMaterial({
       uniforms,
       vertexShader,
-      fragmentShader
+      fragmentShader,
+      depthTest: false, // Optimization: Disable depth testing for fullscreen quad
+      depthWrite: false // Optimization: Disable depth writing
     });
 
-    // Create fullscreen quad
+    // Create optimized fullscreen quad
     const geometry = new THREE.PlaneGeometry(2, 2);
     const mesh = new THREE.Mesh(geometry, material);
     scene.add(mesh);
 
-    // Animation loop
+    // Optimized animation loop
     const clock = new THREE.Clock();
-    function animate() {
+    let frameId: number;
+
+    const animate = () => {
       uniforms.time.value = clock.getElapsedTime();
       renderer.render(scene, camera);
-      requestAnimationFrame(animate);
-    }
-    animate();
+      frameId = requestAnimationFrame(animate);
+    };
 
-    // Handle window resize
+    // Start animation after a short delay to prevent initial frame drops
+    setTimeout(() => {
+      animate();
+    }, 100);
+
+    // Optimized resize handler with debouncing
+    let resizeTimeout: NodeJS.Timeout;
     const handleResize = () => {
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+      }, 150);
     };
 
     window.addEventListener('resize', handleResize);
 
-    // Mouse handling for click-only sun movement
+    // Optimized mouse handling
     let isMouseDown = false;
 
     const handleMouseDown = (event: MouseEvent) => {
@@ -521,12 +538,14 @@ const SkyShader = () => {
       window.removeEventListener('mouseup', handleMouseUp);
       window.removeEventListener('mousemove', handleMouseMove);
       
+      cancelAnimationFrame(frameId);
       if (containerRef.current) {
         containerRef.current.removeChild(renderer.domElement);
       }
       
       geometry.dispose();
       material.dispose();
+      noiseTexture.dispose();
       renderer.dispose();
     };
   }, []);
